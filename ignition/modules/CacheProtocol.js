@@ -1,7 +1,7 @@
 const { buildModule } = require("@nomicfoundation/hardhat-ignition/modules");
 
 module.exports = buildModule("CacheProtocol", (m) => {
-  const contract = m.contract("CacheProtocol", ["0xDc5950C626bdB597E586CEaa91117579cb10688D"]);
+  const contract = m.contract("CacheProtocol", ["0x636b7E4E9b7331047b431179809F3546e1f7A841"]);
 
   return { contract };
 });
