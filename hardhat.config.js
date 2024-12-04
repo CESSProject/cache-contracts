@@ -5,7 +5,7 @@ module.exports = {
   solidity: "0.8.24",
   networks: {
     cessdev: {
-      url: 'https://testnet-rpc.cess.cloud/ws/', // 输入您的RPC URL
+      url: 'https://testnet-rpc.cess.cloud/ws/', 
       chainId: 11330, // (hex: 0x504),
       accounts: [''],
     },
