@@ -2,33 +2,40 @@ pragma solidity ^0.8.20;
 
 import {CacheToken} from "./CacheToken.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-contract CacheProtocol {
+contract CacheProtocol is Ownable {
     address peerId;
-
-    address owner;
 
     uint256 createTime;
 
     uint256 nodeNum;
 
-    uint256 CurTotalOrderNum;
+    uint256 public UnitPrice;
+
+    uint256 CurTotalTraffic;
 
     uint256 TotalCollerate;
 
-    mapping( address => uint256 ) public OrderNum;
+    mapping( address => uint256 ) public TrafficNum;
 
-    mapping( uint256 => uint256 ) public TermTotalOrder;
+    mapping( uint256 => uint256 ) public TermTotalTraffic;
 
     mapping( address => NodeInfo ) public Node;
 
     mapping( uint256 => bool ) public TokenBonded;
 
+    mapping( address => mapping ( address => uint256 )) public UserTrafficMap;
+
+    address[] public TeeNodes;
+
     struct NodeInfo {
         bool created;
         uint256 collerate;
         uint256 tokenId;
-        bytes peerId;
+        string endpoint;
+        address teeEth;
+        bytes teeCess;
     }
 
     mapping(address => uint256) public CacheReward;
@@ -46,16 +53,24 @@ contract CacheProtocol {
 
     event Staking(address indexed nodeAcc, uint256 indexed tokenId);
 
-    event OrderPayment(bytes32 indexed orderId, address indexed nodeAcc);
+    event OrderPayment(address indexed teeAcc, uint256 traffic);
+
+    event TrafficForwarding(address indexed nodeAcc, uint256 traffic);
 
     event Claim(address indexed nodeAcc, uint256 reward);
 
     event Exit(address indexed nodeAcc);
 
-    constructor(address peerid) {
+    constructor(address peerid) Ownable(msg.sender) {
         peerId = peerid;
-        owner = msg.sender;
         createTime = block.timestamp;
+        UnitPrice = 1192092895;
+    }
+
+    function updateUnitPrice(uint256 _price) external {
+        _checkOwner();
+
+        UnitPrice = _price;
     }
 
     function isTokenOwner(address acc, uint256 tokenId) public view returns (bool) {
@@ -64,11 +79,7 @@ contract CacheProtocol {
         return (_owner == acc);
     }
 
-    function staking(address nodeAcc, address tokenAcc, uint256 tokenId, bytes memory _peerId, bytes memory _signature) external payable {
-        if (msg.value < 3000000000000000000000) {
-            revert("Insufficient pledge amount");
-        }
-        
+    function staking(address nodeAcc, address tokenAcc, uint256 tokenId, string memory _endpoint, bytes memory _signature, address _teeEth, bytes memory _teeCess) external payable {   
         if (isTokenOwner(tokenAcc, tokenId) == false) {
             revert("Not the token holder");
         }
@@ -79,48 +90,52 @@ contract CacheProtocol {
             revert("verify signature failed");
         }
 
-        Node[nodeAcc] = NodeInfo(true, msg.value, tokenId, _peerId);
-        OrderNum[nodeAcc] = 0;
+        Node[nodeAcc] = NodeInfo(true, msg.value, tokenId, _endpoint, _teeEth, _teeCess);
+        if (_teeEth != address(0)) {
+            TeeNodes.push(_teeEth);
+        }
+        TrafficNum[nodeAcc] = 0;
         CacheReward[nodeAcc] = 0;
         RewardRecord[nodeAcc] = 0;
         TotalCollerate += msg.value;
         TokenBonded[tokenId] = true;
+        nodeNum += 1;
 
         emit Staking(nodeAcc, tokenId);
     }
 
-    function cacheOrderPayment(address nodeAcc) external payable {
-        if (msg.value < 100000000000000000) {
+    function removeTeeNodes(uint i) internal {
+        TeeNodes[i] = TeeNodes[TeeNodes.length - 1];
+        TeeNodes.pop();
+    }
+
+    function cacheOrderPayment(address _teeAcc, uint256 _traffic) external payable {
+        if (msg.value != _traffic * UnitPrice) {
             revert("Insufficient amount");
         }
 
-        uint256 term = getCurrencyTerm();
-        bytes32 orderId = _generateOrderId(nodeAcc);
-        OrderInfo memory orderInfo = OrderInfo(
-            msg.value,
-            msg.sender,
-            nodeAcc,
-            term
-        );
+        UserTrafficMap[msg.sender][_teeAcc] += _traffic;
 
-        Order[orderId] = orderInfo;
-        uint256 orderNum = msg.value / 100000000000000000;
-        OrderNum[nodeAcc] += orderNum;
-        if (TermTotalOrder[term] == 0) {
-            TermTotalOrder[term] = TermTotalOrder[term] + orderNum + CurTotalOrderNum;
-        } else {
-            TermTotalOrder[term] += orderNum;
-        }
-        CurTotalOrderNum += orderNum;
-        CacheReward[nodeAcc] += (msg.value * 80 / 100);
-
-        emit OrderPayment(orderId, nodeAcc);
+        emit OrderPayment(_teeAcc, _traffic);
     }
 
-    function orderClaim(bytes32 orderId) external {
-        OrderInfo memory _orderInfo = Order[orderId];
-        require(_orderInfo.node == msg.sender, "not order node");
-        delete Order[orderId];
+    function trafficForwarding(address user, address _nodeAcc, uint256 _traffic) external {
+        uint256 term = getCurrencyTerm();
+
+        UserTrafficMap[user][msg.sender] -= _traffic;
+        TrafficNum[_nodeAcc] += _traffic;
+
+        if (TermTotalTraffic[term] == 0) {
+            TermTotalTraffic[term] = TermTotalTraffic[term] + _traffic + CurTotalTraffic;
+        } else {
+            TermTotalTraffic[term] += _traffic;
+        }
+
+        CurTotalTraffic += _traffic;
+
+        CacheReward[_nodeAcc] = _traffic * UnitPrice;
+
+        emit TrafficForwarding(_nodeAcc, _traffic);
     }
 
     function claim() external {
@@ -132,17 +147,16 @@ contract CacheProtocol {
 
         uint256 alpha = _getAlpha();
 
-        uint256 totalOrderNum = nodeNum + TermTotalOrder[term - 1];
+        uint256 totalOrderNum = nodeNum + TermTotalTraffic[term - 1];
 
         uint256 avg = nodeNum / totalOrderNum;
 
-        uint256 numOrder = OrderNum[msg.sender];
+        uint256 numOrder = TrafficNum[msg.sender];
 
         uint256 rewardWord = CacheReward[msg.sender];
 
         uint256 rewardTerm = (
-            ((avg + (alpha * (numOrder - avg))) / totalOrderNum * 2 / 10) + 
-            (_nodeInfo.collerate / TotalCollerate * 2 /10)
+            ((avg + (alpha * (numOrder - avg))) / totalOrderNum * 2 / 10)
         ) * 100000000000000000000000;
             
         uint256 issueReward = (rewardWord + rewardTerm) * 40 / 100;
@@ -151,8 +165,8 @@ contract CacheProtocol {
 
         payable(msg.sender).transfer(issueReward);
         RewardRecord[msg.sender] = term - 1;
-        OrderNum[msg.sender] = 0;
-        CurTotalOrderNum -= numOrder;
+        TrafficNum[msg.sender] = 0;
+        CurTotalTraffic -= numOrder;
 
         emit Claim(msg.sender, issueReward);
     }
@@ -162,9 +176,17 @@ contract CacheProtocol {
         require(_nodeInfo.created, "Cache node not registered");
 
         payable(msg.sender).transfer(_nodeInfo.collerate);
+        if (_nodeInfo.teeEth != address(0)) {
+            uint16 i;
+            for (i = 0; i <= TeeNodes.length; i++) {
+                if (TeeNodes[i] == _nodeInfo.teeEth) {
+                    removeTeeNodes(i);
+                }
+            }
+        }
 
-        CurTotalOrderNum -= OrderNum[msg.sender];
-        delete OrderNum[msg.sender];
+        CurTotalTraffic -= TrafficNum[msg.sender];
+        delete TrafficNum[msg.sender];
         delete Node[msg.sender];
         delete RewardRecord[msg.sender];
         delete CacheReward[msg.sender];
